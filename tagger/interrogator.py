@@ -12,7 +12,7 @@ import json
 
 from numpy import asarray, float32, expand_dims, exp
 
-tag_escape_pattern = re.compile(r'([\\()])')
+tag_escape_pattern = re.compile(r"([\\()])")
 
 import tagger.dbimutils as dbimutils
 
@@ -28,27 +28,45 @@ class Interrogator:
         add_confident_as_weight=False,
         replace_underscore=False,
         replace_underscore_excludes: List[str] = [],
-        escape_tag=False
+        escape_tag=False,
     ) -> Dict[str, float]:
         for t in additional_tags:
-            tags[t] = 1.0
+            tags.append((t, 1.0))
+
+        filtered_tags = [
+            (t, c) for t, c in tags if c >= threshold and t not in exclude_tags
+        ]
+
+        sorted_tags = sorted(
+            filtered_tags,
+            key=lambda item: item[0 if sort_by_alphabetical_order else 1],
+            reverse=not sort_by_alphabetical_order,
+        )
+
+        processed_tags = []
+        for tag, confidence in sorted_tags:
+            new_tag = tag
+            if replace_underscore and tag not in replace_underscore_excludes:
+                new_tag = new_tag.replace("_", " ")
+            if escape_tag:
+                new_tag = tag_escape_pattern.sub(r"\\\1", new_tag)
+            if add_confident_as_weight:
+                new_tag = f"({new_tag}:{confidence})"
+            processed_tags.append((new_tag, confidence))
+
+        return processed_tags
 
         # those lines are totally not "pythonic" but looks better to me
         tags = {
             t: c
-
             # sort by tag name or confident
             for t, c in sorted(
                 tags.items(),
                 key=lambda i: i[0 if sort_by_alphabetical_order else 1],
-                reverse=not sort_by_alphabetical_order
+                reverse=not sort_by_alphabetical_order,
             )
-
             # filter tags
-            if (
-                c >= threshold
-                and t not in exclude_tags
-            )
+            if (c >= threshold and t not in exclude_tags)
         }
 
         new_tags = []
@@ -56,13 +74,13 @@ class Interrogator:
             new_tag = tag
 
             if replace_underscore and tag not in replace_underscore_excludes:
-                new_tag = new_tag.replace('_', ' ')
+                new_tag = new_tag.replace("_", " ")
 
             if escape_tag:
-                new_tag = tag_escape_pattern.sub(r'\\\1', new_tag)
+                new_tag = tag_escape_pattern.sub(r"\\\1", new_tag)
 
             if add_confident_as_weight:
-                new_tag = f'({new_tag}:{tags[tag]})'
+                new_tag = f"({new_tag}:{tags[tag]})"
 
             new_tags.append((new_tag, tags[tag]))
         tags = dict(new_tags)
@@ -71,7 +89,7 @@ class Interrogator:
 
     def __init__(self, name: str) -> None:
         self.name = name
-        self.providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+        self.providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
     def load(self):
         raise NotImplementedError()
@@ -79,35 +97,34 @@ class Interrogator:
     def unload(self) -> bool:
         unloaded = False
 
-        if hasattr(self, 'model') and self.model is not None:
+        if hasattr(self, "model") and self.model is not None:
             del self.model
             unloaded = True
-            print(f'Unloaded {self.name}')
+            print(f"Unloaded {self.name}")
 
-        if hasattr(self, 'tags'):
+        if hasattr(self, "tags"):
             del self.tags
 
         return unloaded
 
     def use_cpu(self) -> None:
-        self.providers = ['CPUExecutionProvider']
+        self.providers = ["CPUExecutionProvider"]
 
     def interrogate(
-        self,
-        image: Image
+        self, image: Image
     ) -> Tuple[
-        Dict[str, float],  # rating confidents
-        Dict[str, float]  # tag confidents
+        Dict[str, float], Dict[str, float]  # rating confidents  # tag confidents
     ]:
         raise NotImplementedError()
+
 
 class WaifuDiffusionInterrogator(Interrogator):
     def __init__(
         self,
         name: str,
-        model_path='model.onnx',
-        tags_path='selected_tags.csv',
-        **kwargs
+        model_path="model.onnx",
+        tags_path="selected_tags.csv",
+        **kwargs,
     ) -> None:
         super().__init__(name)
         self.model_path = model_path
@@ -117,31 +134,27 @@ class WaifuDiffusionInterrogator(Interrogator):
     def download(self) -> Tuple[os.PathLike, os.PathLike]:
         print(f"Loading {self.name} model file from {self.kwargs['repo_id']}")
 
-        model_path = Path(hf_hub_download(
-            **self.kwargs, filename=self.model_path))
-        tags_path = Path(hf_hub_download(
-            **self.kwargs, filename=self.tags_path))
+        model_path = Path(hf_hub_download(**self.kwargs, filename=self.model_path))
+        tags_path = Path(hf_hub_download(**self.kwargs, filename=self.tags_path))
         return model_path, tags_path
 
     def load(self) -> None:
         model_path, tags_path = self.download()
 
         from onnxruntime import InferenceSession
+
         self.model = InferenceSession(str(model_path), providers=self.providers)
 
-        print(f'Loaded {self.name} model from {model_path}')
+        print(f"Loaded {self.name} model from {model_path}")
 
         self.tags = pd.read_csv(tags_path)
 
-    def interrogate(
-        self,
-        image: Image
-    ) -> Tuple[
+    def interrogate(self, image: Image) -> Tuple[
         Dict[str, float],  # rating confidents
-        Dict[str, float]  # tag confidents
+        List[Tuple[str, float]],  # tag confidents
     ]:
         # init model
-        if not hasattr(self, 'model') or self.model is None:
+        if not hasattr(self, "model") or self.model is None:
             self.load()
 
         # code for converting the image and running the model is taken from the link below
@@ -152,10 +165,10 @@ class WaifuDiffusionInterrogator(Interrogator):
         _, height, _, _ = self.model.get_inputs()[0].shape
 
         # alpha to white
-        image = image.convert('RGBA')
-        new_image = Image.new('RGBA', image.size, 'WHITE')
+        image = image.convert("RGBA")
+        new_image = Image.new("RGBA", image.size, "WHITE")
         new_image.paste(image, mask=image)
-        image = new_image.convert('RGB')
+        image = new_image.convert("RGB")
         image = np.asarray(image)
 
         # PIL RGB to OpenCV BGR
@@ -171,25 +184,29 @@ class WaifuDiffusionInterrogator(Interrogator):
         label_name = self.model.get_outputs()[0].name
         confidents = self.model.run([label_name], {input_name: image})[0]
 
-        tags = self.tags[:][['name']]
-        tags['confidents'] = confidents[0]
+        tags = self.tags[:][["name"]]
+        tags["confidents"] = confidents[0]
 
         # first 4 items are for rating (general, sensitive, questionable, explicit)
         ratings = dict(tags[:4].values)
 
         # rest are regular tags
-        tags = dict(tags[4:].values)
+        # tags = dict(tags[4:].values)
+        tags_with_confidences = []
+        for i, row in tags[4:].iterrows():
+            tags_with_confidences.append((row["name"], row["confidents"]))
+        return ratings, tags_with_confidences
 
-        return ratings, tags
 
 class MLDanbooruInterrogator(Interrogator):
-    """ Interrogator for the MLDanbooru model. """
+    """Interrogator for the MLDanbooru model."""
+
     def __init__(
         self,
         name: str,
         repo_id: str,
         model_path: str,
-        tags_path='classes.json',
+        tags_path="classes.json",
     ) -> None:
         super().__init__(name)
         self.model_path = model_path
@@ -201,10 +218,7 @@ class MLDanbooruInterrogator(Interrogator):
     def download(self) -> Tuple[str, str]:
         print(f"Loading {self.name} model file from {self.repo_id}")
 
-        model_path = hf_hub_download(
-            repo_id=self.repo_id,
-            filename=self.model_path
-        )
+        model_path = hf_hub_download(repo_id=self.repo_id, filename=self.model_path)
         tags_path = hf_hub_download(
             repo_id=self.repo_id,
             filename=self.tags_path,
@@ -215,19 +229,17 @@ class MLDanbooruInterrogator(Interrogator):
         model_path, tags_path = self.download()
 
         from onnxruntime import InferenceSession
-        self.model = InferenceSession(model_path,
-                                        providers=self.providers)
-        print(f'Loaded {self.name} model from {model_path}')
 
-        with open(tags_path, 'r', encoding='utf-8') as filen:
+        self.model = InferenceSession(model_path, providers=self.providers)
+        print(f"Loaded {self.name} model from {model_path}")
+
+        with open(tags_path, "r", encoding="utf-8") as filen:
             self.tags = json.load(filen)
 
     def interrogate(
-        self,
-        image: Image
+        self, image: Image
     ) -> Tuple[
-        Dict[str, float],  # rating confidents
-        Dict[str, float]  # tag confidents
+        Dict[str, float], List[Tuple[str, float]]  # rating confidents  # tag confidents
     ]:
         # init model
         if self.model is None:
@@ -244,13 +256,15 @@ class MLDanbooruInterrogator(Interrogator):
         input_ = self.model.get_inputs()[0]
         output = self.model.get_outputs()[0]
         # evaluate model
-        y, = self.model.run([output.name], {input_.name: x})
+        (y,) = self.model.run([output.name], {input_.name: x})
 
         # Softmax
         y = 1 / (1 + exp(-y))
 
-        tags = {tag: float(conf) for tag, conf in zip(self.tags, y.flatten())}
-        return {}, tags
+        tags_with_confidences = []
+        for tag, conf in zip(self.tags, y.flatten()):
+            tags_with_confidences.append((tag, float(conf)))
+        return {}, tags_with_confidences
 
     def large_batch_interrogate(self, images: List, dry_run=False) -> str:
         raise NotImplementedError()
